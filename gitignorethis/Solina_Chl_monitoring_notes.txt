@@ -1,0 +1,7 @@
+Sentinel - 3 OLCI Measures in 21 spectral bands (400–1020 nm)
+Parameter		Details
+Spectral Bands		21 bands (400–1020 nm)
+Spatial Resolution	300 m (for all bands)
+Swath Width		1270 km
+Revisit Time		~2 days (with both satellites)
+Orbit			Sun-synchronous, ~815 km
