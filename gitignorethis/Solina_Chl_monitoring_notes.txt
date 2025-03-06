@@ -5,3 +5,8 @@ Spatial Resolution	300 m (for all bands)
 Swath Width		1270 km
 Revisit Time		~2 days (with both satellites)
 Orbit			Sun-synchronous, ~815 km
+
+Chlorophyll-a concentration 🦠 (e.g., for phytoplankton and harmful algal blooms)
+Suspended sediments & turbidity
+Coloured dissolved organic matter (CDOM)
+Water temperature & ocean productivity
