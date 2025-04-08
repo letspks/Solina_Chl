@@ -57,7 +57,7 @@ def apply_alert_level(app):
 
     combined.thumbnail((900, 900))
     app.map_photo = ImageTk.PhotoImage(combined)
-    app.map_label.config(image=app.map_photo, bg="#cccccc")
+    app.map_label.configure(image=app.map_photo, fg_color="#cccccc")
 
 
 
@@ -97,9 +97,9 @@ def update_pixel_info(app, event):
         orig_x = int(relative_x * scale_x)
         orig_y = int(relative_y * scale_y)
         pixel_value = app.image_array[orig_y, orig_x]
-        app.pixel_info_label.config(text=f"X: {orig_x}, Y: {orig_y}, Value: {pixel_value:.2f}")
+        app.pixel_info_label.configure(text=f"X: {orig_x}, Y: {orig_y}, Value: {pixel_value:.2f}")
     else:
-        app.pixel_info_label.config(text="X: -, Y: -, Value: -")
+        app.pixel_info_label.configure(text="X: -, Y: -, Value: -")
 
 def load_map(app):
     file_path = filedialog.askopenfilename(filetypes=[("GeoTIFF Files", "*.tif;*.tiff")])
@@ -164,14 +164,20 @@ def display_map(app):
         # === Krok 6: wyświetlenie ===
         combined.thumbnail((900, 900))
         app.map_photo = ImageTk.PhotoImage(combined)
-        app.map_label.config(image=app.map_photo, bg="#cccccc")
+
+        # ✅ Warunek: jeśli Show Alert Level jest zaznaczone, nakładamy alerty
+        if hasattr(app, "show_alert_checkbox") and app.show_alert_checkbox.get():
+            apply_alert_level(app)
+        else:
+            app.map_label.configure(image=app.map_photo, fg_color="#cccccc")
+    
 
         draw_colormap_legend(app)
 
         if date_str:
-            app.date_label.config(text=f"Date of displayed image: {date_str}")
+            app.date_label.configure(text=f"Date of displayed image: {date_str}")
         else:
-            app.date_label.config(text="Date: Unknown")
+            app.date_label.configure(text="Date: Unknown")
 
     except Exception as e:
         import traceback
