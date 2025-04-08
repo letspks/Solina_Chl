@@ -25,6 +25,9 @@ class MapApp:
         self.logo_label = tk.Label(self.control_frame, image=self.logo_photo, bg="#23272A")
         self.logo_label.pack(pady=5)
 
+        self.date_label = tk.Label(self.control_frame, text="Date of displayed image: -", font=("Arial", 12, "bold"), bg="white")
+        self.date_label.pack(side=tk.TOP, pady=(5, 0))
+
         tk.Label(self.control_frame, text="Start date:").pack(pady=5)
         self.start_date = DateEntry(self.control_frame)
         self.start_date.pack(pady=5)
@@ -78,12 +81,54 @@ class MapApp:
         self.change_cmap_button.pack(pady=5)
         Tooltip(self.change_cmap_button, "Changes colormap to selected.")
 
-        self.map_label = tk.Label(self.root)
+        # Kontener po prawej stronie — mapa
+        self.map_container = tk.Frame(self.root, bg="#cccccc")  # duży kontener
+        self.map_container.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH)
+
+        # Ramka na mapę wewnątrz kontenera — ma ramkę i jest wyśrodkowana
+        self.map_frame = tk.Frame(self.map_container, bg="#cccccc", bd=1, relief="solid")
+        self.map_frame.place(relx=0.5, rely=0.5, anchor="center")  # wyśrodkowanie
+
+        # Label z obrazem
+        self.map_label = tk.Label(self.map_frame, bg="#cccccc")
+        self.map_label.pack()
+
+
         self.map_label.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH)
+
+        # Legenda (gradient colormap)
+        self.legend_label = tk.Label(self.control_frame, text="Colormap Legend:")
+        self.legend_label.pack(pady=(5, 2))
+
+        self.legend_canvas = tk.Canvas(self.control_frame, width=256, height=58, bg="white", highlightthickness=0, highlightbackground="gray")
+        self.legend_canvas.pack(pady=(0, 15))
+
+        
+
+
+
 
         self.pixel_info_label = tk.Label(self.root, text="X: -, Y: -, Value: -", font=("Arial", 10), bg="white")
         self.pixel_info_label.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-10)
         self.map_label.bind("<Motion>", self.update_pixel_info)
+
+        self.tif_files = []  # lista ścieżek do plików
+        self.current_index = tk.IntVar(value=0)
+
+        self.slider_label = tk.Label(self.control_frame, text="Time Slider:")
+        self.slider_label.pack(pady=5)
+
+        self.time_slider = tk.Scale(self.control_frame, from_=0, to=0, orient=tk.HORIZONTAL,
+                                    variable=self.current_index, command=self.on_slider_change, length=300)
+        self.time_slider.pack(pady=5)
+
+        self.load_folder_button = tk.Button(self.control_frame, text="Load all TIFs from folder", command=self.load_tif_folder)
+        self.load_folder_button.pack(pady=5)
+
+
+        self.download_all_button = tk.Button(self.control_frame, text="Download all images from 2021 till now - WARNING", command=lambda: logic.download_all_gee_images(self))
+        self.download_all_button.pack(pady=5)
+
 
     def apply_alert_level(self):
         logic.apply_alert_level(self)
@@ -105,3 +150,39 @@ class MapApp:
 
     def process_map(self):
         logic.download_gee_image(self)
+
+    def load_tif_folder(self):
+        folder_path = filedialog.askdirectory()
+        if not folder_path:
+            return
+
+        import os
+        import re
+
+        tif_files = []
+        for file in os.listdir(folder_path):
+            if file.endswith(".tif") or file.endswith(".tiff"):
+                match = re.search(r"(\d{4}-\d{2}-\d{2})", file)
+                if match:
+                    date_str = match.group(1)
+                    tif_files.append((date_str, os.path.join(folder_path, file)))
+
+        tif_files.sort()  # sortuj wg daty
+        self.tif_files = tif_files  # <--- zachowujemy datę i ścieżkę!
+
+        if not self.tif_files:
+            messagebox.showerror("Błąd", "Nie znaleziono żadnych plików .tif w folderze.")
+            return
+
+        self.time_slider.config(to=len(self.tif_files) - 1)
+        self.current_index.set(0)
+        self.tif_path = self.tif_files[0][1]  # tylko ścieżka
+        self.display_map()
+
+
+    def on_slider_change(self, value):
+        index = int(value)
+        if 0 <= index < len(self.tif_files):
+            self.tif_path = self.tif_files[index][1]  # tylko ścieżka
+            self.display_map()
+
