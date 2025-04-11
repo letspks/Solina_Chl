@@ -188,48 +188,157 @@ def display_map(app):
 
 
 def download_gee_image(app):
-    def compute_chl(image):
-        chl = image.expression('((B5-B4) / (B5+B4)+1)/2', {'B5': image.select('B5'), 'B4': image.select('B4')}).rename('Chl_a')
-        scl = image.select('SCL')
-        water_mask = scl.eq(6)
-        return image.addBands(chl).updateMask(water_mask)
+    import ee
+    import time
+    import os
+    from tkinter import messagebox
+    from geemap import ee_export_image
+
+    source = app.source_combobox.get()
+    print(f"[INFO] Wybrano źródło: {source}")
+
     try:
         ee.Initialize(project='ee-solinachlorofil')
         start_date = app.start_date.get_date().strftime('%Y-%m-%d')
         end_date = app.end_date.get_date().strftime('%Y-%m-%d')
-        aoi = ee.Geometry.Rectangle([22.396522,49.300936,22.535404,49.436130 ])
-        sentinel2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-                    .filterDate(start_date, end_date)
-                    .filterBounds(aoi)
-                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5))
-                    .sort('CLOUDY_PIXEL_PERCENTAGE'))
-       # Weź pierwszy obraz, żeby poznać datę
-        image = sentinel2.first()
-        image_date_millis = image.get("system:time_start").getInfo()
-        image = sentinel2.mosaic().clip(aoi)
+        aoi = ee.Geometry.Rectangle([22.396522, 49.300936, 22.535404, 49.436130])
 
-        rgb_image = image.visualize(
-            bands=['B4', 'B3', 'B2'],
-            min=0,
-            max=3000,
-            gamma=1.2  # możesz pobawić się tym
-        ).clip(aoi)
+        if source == "Sentinel-2":
+            dataset = 'COPERNICUS/S2_SR_HARMONIZED'
+            bands = ['B4', 'B3', 'B2']
+            rgb_max = 3000
+            expression = '((B5 - B4) / (B5 + B4) + 1)/2'
+            chl_bands = {'B5': 'B5', 'B4': 'B4'}
+            scl_band = 'SCL'
+            water_class = 6
+
+            def compute_chl(image):
+                chl = image.expression(expression, chl_bands).rename('Chl_a')
+                scl = image.select(scl_band)
+                water_mask = scl.eq(water_class)
+                return image.addBands(chl).updateMask(water_mask)
+
+            sentinel = (ee.ImageCollection(dataset)
+                        .filterDate(start_date, end_date)
+                        .filterBounds(aoi)
+                        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5))
+                        .sort('CLOUDY_PIXEL_PERCENTAGE'))
+
+            chl_folder = "sen2_cache"
+            rgb_folder = "sen2_cache_rgb"
+            file_suffix = "sen2"
+
+            image = sentinel.first()
+            if image is None:
+                messagebox.showwarning("Brak danych", f"Nie znaleziono żadnych zobrazowań w podanym zakresie dla {source}.")
+                return
+
+            image_date_millis = image.get("system:time_start").getInfo()
+            image_rgb = sentinel.select(bands).mosaic().clip(aoi)
+            image_chl = sentinel.select(list(set(chl_bands.values()) + [scl_band])).mosaic().clip(aoi)
+
+            rgb_image = image_rgb.visualize(
+                bands=bands,
+                min=0,
+                max=rgb_max,
+                gamma=1.2
+            ).clip(aoi)
+
+        elif source == "Sentinel-3":
+            dataset = 'COPERNICUS/S3/OLCI'
+            bands = ['Oa08_radiance', 'Oa06_radiance', 'Oa04_radiance']
+            rgb_max = 0.05
+
+            def compute_chl(image):
+                bri = image.expression(
+                    'B9 / (B11 + 1e-6)',
+                    {
+                        'B9': image.select('Oa09_radiance'),
+                        'B11': image.select('Oa11_radiance')
+                    }
+                ).rename('BRI')
+                return image.addBands(bri)
+
+            sentinel = (ee.ImageCollection(dataset)
+                        .filterDate(start_date, end_date)
+                        .filterBounds(aoi)
+                        .sort("system:time_start"))
+
+            chl_folder = "s3_cache"
+            rgb_folder = "s3_cache_rgb"
+            file_suffix = "s3"
+
+            first_image = sentinel.first()
+            if first_image is None:
+                messagebox.showwarning("Brak danych", f"Nie znaleziono żadnych zobrazowań w podanym zakresie dla {source}.")
+                return
+
+            image_date_millis = first_image.get("system:time_start").getInfo()
+            image_chl = sentinel.select(['Oa09_radiance', 'Oa11_radiance']).mosaic().clip(aoi)
+
+            # RGB z Sentinel-2 jako podkład
+            s2_dataset = 'COPERNICUS/S2_SR_HARMONIZED'
+            s2 = (ee.ImageCollection(s2_dataset)
+                  .filterDate(start_date, end_date)
+                  .filterBounds(aoi)
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5)))
+
+            s2_mosaic = s2.mosaic()
+            sentinel2_rgb = s2_mosaic.select(['B4', 'B3', 'B2'])
+
+            rgb_image = sentinel2_rgb.visualize(
+                bands=['B4', 'B3', 'B2'],
+                min=0,
+                max=3000,
+                gamma=1.2
+            ).clip(aoi)
+
+        else:
+            messagebox.showerror("Błąd", "Nieznane źródło danych.")
+            return
+
+        os.makedirs(chl_folder, exist_ok=True)
+        os.makedirs(rgb_folder, exist_ok=True)
 
         image_date = time.strftime('%Y-%m-%d', time.gmtime(image_date_millis / 1000))
-        messagebox.showinfo("Pobrano obraz", f"Pobrano obraz z dnia: {image_date}")
-        chl_image = compute_chl(image).select('Chl_a').clip(aoi)
-        output_path = f"sen2_cache/chl_{image_date}_sen2.tif"
-        geemap.ee_export_image(chl_image, filename=output_path, scale=10, region=aoi, file_per_band=False, crs='EPSG:4326')
-        app.tif_path = output_path
-        rgb_output_path = f"sen2_cache_rgb/rgb_{image_date}_sen2.tif"
-        geemap.ee_export_image(rgb_image, filename=rgb_output_path, scale=10, region=aoi, file_per_band=False, crs='EPSG:4326')
+        output_path = f"{chl_folder}/chl_{image_date}_{file_suffix}.tif"
+        rgb_output_path = f"{rgb_folder}/rgb_{image_date}_{file_suffix}.tif"
 
-        
-        geemap.ee_export_image(rgb_image, filename=rgb_output_path, scale=10, region=aoi, file_per_band=False, crs='EPSG:4326')
+        print(f"[INFO] Eksportuję chl do: {output_path}")
+        print(f"[INFO] Eksportuję RGB do: {rgb_output_path}")
 
-        display_map(app)
+        if source == "Sentinel-3":
+            chl_image = compute_chl(image_chl).select('BRI').clip(aoi)
+        else:
+            chl_image = compute_chl(image_chl).select('Chl_a').clip(aoi)
+
+        ee_export_image(chl_image, filename=output_path, scale=10, region=aoi, file_per_band=False, crs='EPSG:4326')
+        ee_export_image(rgb_image, filename=rgb_output_path, scale=10, region=aoi, file_per_band=False, crs='EPSG:4326')
+
+        for _ in range(20):
+            if os.path.exists(output_path):
+                print("[INFO] Plik chl istnieje.")
+                break
+            time.sleep(0.5)
+
+        if os.path.exists(output_path):
+            app.tif_path = output_path
+            messagebox.showinfo("Pobrano", f"Pobrano obraz z dnia: {image_date}")
+            app.display_map()
+        else:
+            messagebox.showerror("Błąd", f"Plik {output_path} nie został utworzony.")
+            print("[ERROR] Plik nie został znaleziony po eksporcie.")
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         messagebox.showerror("Błąd", f"Nie udało się pobrać obrazu: {e}")
+
+
+
+
+
+
 
 def draw_colormap_legend(app):
     cmap = plt.get_cmap(app.cmap_combobox.get())
@@ -248,8 +357,8 @@ def draw_colormap_legend(app):
     app.legend_canvas.create_image(0, 0, anchor="nw", image=photo)
 
     # Dodaj liczby 0 i 1
-    app.legend_canvas.create_text(0+5, height + 4, anchor="nw", text="0", font=("Arial", 8))
-    app.legend_canvas.create_text(width-5, height + 4, anchor="ne", text="1", font=("Arial", 8))
+    app.legend_canvas.create_text(0+5, height - 33, anchor="nw", text="0", font=("Arial", 8))
+    app.legend_canvas.create_text(width-5, height - 33, anchor="ne", text="1", font=("Arial", 8))
 
 
 
