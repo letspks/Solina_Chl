@@ -108,33 +108,43 @@ def load_map(app):
         display_map(app)
 
 def display_map(app):
+    import os
+    import re
+    import numpy as np
+    import rasterio
+    import geopandas as gpd
+    import matplotlib.pyplot as plt
+    from PIL import Image, ImageTk, ImageDraw
+    from rasterio import features
+    from tkinter import messagebox
+
     if not app.tif_path:
         return
 
     try:
-        import os
-        import re
-
-        # === Krok 1: wyciągnij datę z nazwy ===
+        # === Krok 1: Wyciągnij datę z nazwy pliku ===
         chl_filename = os.path.basename(app.tif_path)
         match = re.search(r"(\d{4}-\d{2}-\d{2})", chl_filename)
         date_str = match.group(1) if match else None
 
-        # === Krok 2: spróbuj załadować RGB jako tło ===
+        # === Krok 2: Spróbuj załadować RGB jako tło ===
         rgb_image = None
         if date_str:
             rgb_path = f"sen2_cache_rgb/rgb_{date_str}_sen2.tif"
             if os.path.exists(rgb_path):
-            
                 with rasterio.open(rgb_path) as rgb_ds:
                     rgb = rgb_ds.read([1, 2, 3])  # B4, B3, B2
                     rgb = np.transpose(rgb, (1, 2, 0))
                     rgb = np.clip(rgb, 0, 255).astype(np.uint8)
                     rgb_image = Image.fromarray(rgb).convert("RGBA")
 
-        # === Krok 3: wczytaj CHL ===
+        # === Krok 3: Wczytaj główny obraz ===
         with rasterio.open(app.tif_path) as dataset:
             app.image_array = dataset.read(1)
+            raster_crs = dataset.crs
+            raster_transform = dataset.transform
+            raster_width = dataset.width
+            raster_height = dataset.height
 
         if np.isnan(app.image_array).all():
             messagebox.showerror("ERROR", "TIFF file contains only NaN values!")
@@ -142,35 +152,48 @@ def display_map(app):
 
         app.image_array = np.nan_to_num(app.image_array)
         masked_array = np.ma.masked_where(app.image_array == 0.0, app.image_array)
-        norm_array = (masked_array - masked_array.min()) / (masked_array.max() - masked_array.min())
 
-        # === Krok 4: przygotuj colormap z przezroczystym tłem ===
+        # Bezpieczna normalizacja
+        if masked_array.max() != masked_array.min():
+            norm_array = (masked_array - masked_array.min()) / (masked_array.max() - masked_array.min())
+        else:
+            norm_array = np.zeros_like(masked_array)
+
+        # === Krok 4: Przygotuj colormap ===
         cmap = plt.get_cmap(app.cmap_combobox.get()).copy()
-        cmap.set_bad(color=(0, 0, 0, 0))  # transparent dla 0.0
+        cmap.set_bad(color=(0, 0, 0, 0))  # przezroczysty dla 0
 
-        rgba_image = cmap(norm_array)  # (H, W, 4)
+        rgba_image = cmap(norm_array)
         rgba_image = (rgba_image * 255).astype(np.uint8)
         chl_img = Image.fromarray(rgba_image, mode="RGBA")
 
-        # === Krok 5: jeśli RGB istnieje — nałóż CHL na RGB ===
+        # === Krok 5: Połączenie RGB i CHL ===
         if rgb_image:
-
             rgb_resized = rgb_image.resize(chl_img.size)
             combined = Image.alpha_composite(rgb_resized, chl_img)
         else:
-
             combined = chl_img
 
-        # === Krok 6: wyświetlenie ===
+        # === Krok 6: Dodanie półprzezroczystej nakładki PNG ===
+        try:
+            overlay_path = 'project/bounds.png'  # <-- Twoja nakładka PNG
+            if os.path.exists(overlay_path):
+                overlay = Image.open(overlay_path).convert("RGBA")
+                overlay = overlay.resize(combined.size)
+                combined = Image.alpha_composite(combined, overlay)
+            else:
+                print(f"[WARNING] Overlay {overlay_path} nie istnieje.")
+        except Exception as e:
+            print(f"[WARNING] Nie udało się nałożyć overlay: {e}")
+
+        # === Krok 7: Wyświetlenie ===
         combined.thumbnail((900, 900))
         app.map_photo = ImageTk.PhotoImage(combined)
 
-        # ✅ Warunek: jeśli Show Alert Level jest zaznaczone, nakładamy alerty
         if hasattr(app, "show_alert_checkbox") and app.show_alert_checkbox.get():
             apply_alert_level(app)
         else:
             app.map_label.configure(image=app.map_photo, fg_color="#cccccc")
-    
 
         draw_colormap_legend(app)
 
@@ -183,6 +206,7 @@ def display_map(app):
         import traceback
         traceback.print_exc()
         messagebox.showerror("ERROR", f"File couldn't be read: {e}")
+
 
 
 
@@ -235,7 +259,9 @@ def download_gee_image(app):
 
             image_date_millis = image.get("system:time_start").getInfo()
             image_rgb = sentinel.select(bands).mosaic().clip(aoi)
-            image_chl = sentinel.select(list(set(chl_bands.values()) + [scl_band])).mosaic().clip(aoi)
+            image_chl = image.select(list(set(list(chl_bands.values()) + [scl_band]))).clip(aoi)
+
+
 
             rgb_image = image_rgb.visualize(
                 bands=bands,
@@ -363,11 +389,85 @@ def draw_colormap_legend(app):
 
 
 
-def download_all_gee_images(app):
+# def download_all_gee_images(app):  #FOR SENTINEL 2
+#     import ee
+#     import time
+#     import os
+#     from datetime import datetime
+
+#     ee.Initialize(project='ee-solinachlorofil')
+
+#     aoi = ee.Geometry.Rectangle([22.396522, 49.300936, 22.535404, 49.436130])
+#     start_date = '2021-01-01'
+#     end_date = datetime.now().strftime('%Y-%m-%d')
+
+#     def compute_chl(image):
+#         chl = image.expression('((B5 - B4) / (B5 + B4) + 1)/2', {
+#             'B5': image.select('B5'),
+#             'B4': image.select('B4')
+#         }).rename('Chl_a')
+#         scl = image.select('SCL')
+#         water_mask = scl.eq(6)
+#         return image.addBands(chl).updateMask(water_mask)
+
+#     # Utwórz foldery jeśli nie istnieją
+#     os.makedirs("sen2_cache", exist_ok=True)
+#     os.makedirs("sen2_cache_rgb", exist_ok=True)
+
+#     sentinel2 = (
+#         ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+#         .filterDate(start_date, end_date)
+#         .filterBounds(aoi)
+#         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5))
+#         .sort('CLOUDY_PIXEL_PERCENTAGE')
+#     )
+
+#     image_list = sentinel2.toList(sentinel2.size())
+#     total = image_list.size().getInfo()
+
+#     for i in range(total):
+#         try:
+#             image = ee.Image(image_list.get(i))
+#             date_ms = image.date().millis().getInfo()
+#             date_str = time.strftime('%Y-%m-%d', time.gmtime(date_ms / 1000))
+
+#             chl_path = f"sen2_cache/chl_{date_str}_sen2.tif"
+#             rgb_path = f"sen2_cache_rgb/rgb_{date_str}_sen2.tif"
+
+#             if os.path.exists(chl_path) and os.path.exists(rgb_path):
+#                 print(f"✅ {date_str} — już pobrane, pomijam.")
+#                 continue
+
+#             print(f"⬇️  Pobieram: {date_str}")
+
+#             image_clipped = image.clip(aoi)
+#             chl_image = compute_chl(image_clipped).select('Chl_a')
+#             rgb_image = image_clipped.visualize(bands=['B4', 'B3', 'B2'], min=0, max=3000, gamma=1.2)
+
+#             # Eksport
+#             geemap.ee_export_image(
+#                 chl_image, filename=chl_path, scale=10, region=aoi,
+#                 file_per_band=False, crs='EPSG:4326'
+#             )
+
+#             geemap.ee_export_image(
+#                 rgb_image, filename=rgb_path, scale=10, region=aoi,
+#                 file_per_band=False, crs='EPSG:4326'
+#             )
+
+#             print(f"✅ Zapisano {date_str}")
+
+#         except Exception as e:
+#             print(f"❌ Błąd przy {i}: {e}")
+
+
+
+def download_all_gee_images(app): #FOR SENTINEL 3
     import ee
     import time
     import os
-    from datetime import datetime
+    from datetime import datetime, timedelta
+    from geemap import ee_export_image
 
     ee.Initialize(project='ee-solinachlorofil')
 
@@ -376,55 +476,79 @@ def download_all_gee_images(app):
     end_date = datetime.now().strftime('%Y-%m-%d')
 
     def compute_chl(image):
-        chl = image.expression('((B5 - B4) / (B5 + B4) + 1)/2', {
-            'B5': image.select('B5'),
-            'B4': image.select('B4')
-        }).rename('Chl_a')
-        scl = image.select('SCL')
-        water_mask = scl.eq(6)
-        return image.addBands(chl).updateMask(water_mask)
+        bri = image.expression(
+            'B9 / (B11 + 1e-6)', {
+                'B9': image.select('Oa09_radiance'),
+                'B11': image.select('Oa11_radiance')
+            }).rename('BRI')
+        return image.addBands(bri)
 
-    # Utwórz foldery jeśli nie istnieją
-    os.makedirs("sen2_cache", exist_ok=True)
-    os.makedirs("sen2_cache_rgb", exist_ok=True)
+    os.makedirs("s3_cache", exist_ok=True)
+    os.makedirs("s3_cache_rgb", exist_ok=True)
 
+    # Lista dat Sentinel-2
     sentinel2 = (
         ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
         .filterDate(start_date, end_date)
         .filterBounds(aoi)
         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5))
-        .sort('CLOUDY_PIXEL_PERCENTAGE')
     )
 
-    image_list = sentinel2.toList(sentinel2.size())
-    total = image_list.size().getInfo()
+    s2_dates = sentinel2.aggregate_array("system:time_start").getInfo()
+    s2_dates = sorted(set(
+        time.strftime('%Y-%m-%d', time.gmtime(ts / 1000)) for ts in s2_dates
+    ))
 
-    for i in range(total):
+    print(f"[INFO] Znaleziono {len(s2_dates)} unikalnych dat Sentinel-2.")
+
+    for date_str in s2_dates:
         try:
-            image = ee.Image(image_list.get(i))
-            date_ms = image.date().millis().getInfo()
-            date_str = time.strftime('%Y-%m-%d', time.gmtime(date_ms / 1000))
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            next_day = (date_obj + timedelta(days=1)).strftime("%Y-%m-%d")
 
-            chl_path = f"sen2_cache/chl_{date_str}_sen2.tif"
-            rgb_path = f"sen2_cache_rgb/rgb_{date_str}_sen2.tif"
+            # Sentinel-3
+            s3 = ee.ImageCollection('COPERNICUS/S3/OLCI') \
+                .filterDate(date_str, next_day) \
+                .filterBounds(aoi)
+
+            if s3.size().getInfo() == 0:
+                print(f"🚫 Brak Sentinel-3 dla {date_str}, pomijam.")
+                continue
+
+            image = s3.first()
+
+            # Sentinel-2 RGB
+            s2 = sentinel2.filterDate(date_str, next_day)
+            if s2.size().getInfo() == 0:
+                print(f"🚫 Brak Sentinel-2 RGB dla {date_str}, pomijam.")
+                continue
+
+            chl_path = f"s3_cache/chl_{date_str}_s3.tif"
+            rgb_path = f"s3_cache_rgb/rgb_{date_str}_s3.tif"
 
             if os.path.exists(chl_path) and os.path.exists(rgb_path):
                 print(f"✅ {date_str} — już pobrane, pomijam.")
                 continue
 
-            print(f"⬇️  Pobieram: {date_str}")
+            print(f"⬇️  Pobieram {date_str}")
 
             image_clipped = image.clip(aoi)
-            chl_image = compute_chl(image_clipped).select('Chl_a')
-            rgb_image = image_clipped.visualize(bands=['B4', 'B3', 'B2'], min=0, max=3000, gamma=1.2)
+            chl_image = compute_chl(image_clipped).select('BRI')
 
-            # Eksport
-            geemap.ee_export_image(
-                chl_image, filename=chl_path, scale=10, region=aoi,
+            s2_mosaic = s2.mosaic().select(['B4', 'B3', 'B2'])
+            rgb_image = s2_mosaic.visualize(
+                bands=['B4', 'B3', 'B2'],
+                min=0,
+                max=3000,
+                gamma=1.2
+            ).clip(aoi)
+
+            ee_export_image(
+                chl_image, filename=chl_path, scale=300, region=aoi,
                 file_per_band=False, crs='EPSG:4326'
             )
 
-            geemap.ee_export_image(
+            ee_export_image(
                 rgb_image, filename=rgb_path, scale=10, region=aoi,
                 file_per_band=False, crs='EPSG:4326'
             )
@@ -432,7 +556,6 @@ def download_all_gee_images(app):
             print(f"✅ Zapisano {date_str}")
 
         except Exception as e:
-            print(f"❌ Błąd przy {i}: {e}")
-
+            print(f"❌ Błąd przy {date_str}: {e}")
 
 
