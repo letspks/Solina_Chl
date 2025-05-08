@@ -174,17 +174,42 @@ def display_map(app):
         else:
             combined = chl_img
 
-        # === Krok 6: Dodanie półprzezroczystej nakładki PNG ===
+        # === Krok 6: Dodanie wektorowej granicy jeziora z shapefile ===
         try:
-            overlay_path = 'project/bounds.png'  # <-- Twoja nakładka PNG
-            if os.path.exists(overlay_path):
-                overlay = Image.open(overlay_path).convert("RGBA")
-                overlay = overlay.resize(combined.size)
-                combined = Image.alpha_composite(combined, overlay)
+            import geopandas as gpd
+            from rasterio import features
+            from scipy.ndimage import binary_dilation
+            # Ścieżka do pliku shapefile
+            shp_path = 'project/solinaborder.shp'
+            if os.path.exists(shp_path):
+                # Wczytaj granice
+                lake_gdf = gpd.read_file(shp_path)
+
+                # Dopasuj CRS do rastra
+                lake_gdf = lake_gdf.to_crs(raster_crs)
+
+                # Rasteryzacja geometrii do maski (1 = jezioro, 0 = reszta)
+                mask = features.rasterize(
+                    [(geom, 1) for geom in lake_gdf.geometry],
+                    out_shape=(raster_height, raster_width),
+                    transform=raster_transform,
+                    fill=0,
+                    dtype=np.uint8
+                )
+                mask = binary_dilation(mask, iterations=1).astype(np.uint8)
+                # Stwórz RGBA overlay z maski
+                overlay_array = np.zeros((raster_height, raster_width, 4), dtype=np.uint8)
+                overlay_array[mask == 1] = [255, 0, 0, 255]  # czerwony, półprzezroczysty
+
+                overlay_img = Image.fromarray(overlay_array, mode="RGBA")
+                overlay_resized = overlay_img.resize(combined.size)
+
+                combined = Image.alpha_composite(combined, overlay_resized)
             else:
-                print(f"[WARNING] Overlay {overlay_path} nie istnieje.")
+                print(f"[WARNING] Shapefile {shp_path} nie istnieje.")
         except Exception as e:
-            print(f"[WARNING] Nie udało się nałożyć overlay: {e}")
+            print(f"[ERROR] Nie udało się nałożyć granicy z shapefile: {e}")
+
 
         # === Krok 7: Wyświetlenie ===
         combined.thumbnail((900, 900))
